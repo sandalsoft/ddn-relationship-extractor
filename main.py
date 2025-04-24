@@ -1,3 +1,5 @@
+#!/Library/Frameworks/Python.framework/Versions/3.12/bin/python3
+
 import argparse
 import glob
 import logging
@@ -17,11 +19,13 @@ logging.basicConfig(level=logging.INFO,
 def parse_arguments():
     """Parses command-line arguments."""
     parser = argparse.ArgumentParser(
-        description='Extract YAML stanzas of kind: Relationship and move them to a separate file.')
+        description='Extract YAML stanzas of kind: Relationship and move them to a separate file or print to stdout.')
     parser.add_argument('input_patterns', nargs='+',
                         help='Glob pattern(s) for input YAML files (e.g., "*.yaml", "**/data.yml").')
-    parser.add_argument('-o', '--output', required=True,
-                        help='Path to the output YAML file.')
+    parser.add_argument('-o', '--output', required=False, default=None,
+                        help='Path to the output YAML file. If omitted, output is written to stdout and input files are not modified.')
+    parser.add_argument('-r', '--remove-from-source', action='store_true',
+                        help='Remove the extracted Relationship stanzas from the original input files. Requires confirmation.')
     return parser.parse_args()
 
 
@@ -150,6 +154,21 @@ def write_output_file(output_path: Path, relationships: List[Dict[str, Any]]):
     except yaml.YAMLError as e:
         logging.error(
             f"Failed to serialize YAML for output file {output_path}: {e}")
+        sys.exit(1)
+
+
+def write_to_stream(stream: Any, relationships: List[Dict[str, Any]]):
+    """Writes the extracted relationships to the given stream (e.g., stdout)."""
+    logging.info(
+        f"Writing {len(relationships)} stanzas to the output stream...")
+    try:
+        yaml.dump_all(relationships, stream,
+                      default_flow_style=False, sort_keys=False)
+        # Add a newline at the end for cleaner terminal output
+        stream.write("\n")
+        logging.info("Successfully wrote to output stream.")
+    except Exception as e:  # Catch broader exceptions for stream writing
+        logging.error(f"Failed to write to output stream: {e}")
         sys.exit(1)
 
 
@@ -298,56 +317,100 @@ def verify_and_remove(
 def main():
     """Main execution function."""
     args = parse_arguments()
-    output_path = Path(args.output).resolve()
-
-    if output_path.exists():
-        logging.warning(
-            f"Output file {output_path} already exists. It will be overwritten.")
-        # Add confirmation or exit? For now, overwrite.
+    stdout_mode = args.output is None
+    remove_mode = args.remove_from_source and not stdout_mode
 
     input_files = find_files(args.input_patterns)
     if not input_files:
         return  # Error already logged by find_files
 
-    backup_files = []
-    try:
-        backup_files = create_backups(input_files)
+    if stdout_mode:
+        logging.info("Outputting to stdout. Input files will not be modified.")
+        if args.remove_from_source:
+            logging.warning(
+                "Ignoring --remove-from-source flag as output is stdout.")
+        try:
+            # Extract only, no backups or removal needed for stdout mode
+            all_relationships, _ = extract_relationships(input_files)
 
-        all_relationships, relationships_by_file = extract_relationships(
-            input_files)
+            if not all_relationships:
+                logging.info(
+                    "No 'kind: Relationship' stanzas found. Nothing to output.")
+                return
 
-        if not all_relationships:
-            logging.info(
-                "No 'kind: Relationship' stanzas found in any input file. Nothing to do.")
-            remove_backups(backup_files)  # Clean up backups
-            # Remove potentially empty output file if created? Or leave it? Leave for now.
-            # Optional: Write empty file if it didn't exist
-            # if not output_path.exists():
-            #     write_output_file(output_path, [])
-            return
+            write_to_stream(sys.stdout, all_relationships)
+            logging.info("Extraction to stdout completed successfully.")
 
-        write_output_file(output_path, all_relationships)
-
-        if verify_and_remove(output_path, relationships_by_file, all_relationships):
-            logging.info("Process completed successfully. Removing backups.")
-            remove_backups(backup_files)
-        else:
+        except Exception as e:
             logging.error(
-                "Process failed during verification or removal. Backups WERE NOT removed.")
-            logging.error(
-                f"Input files may be in an inconsistent state. Backups are in: {', '.join(map(str, backup_files))}")
+                f"An error occurred during extraction to stdout: {e}", exc_info=True)
             sys.exit(1)
 
-    except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}", exc_info=True)
-        # Attempt to clean up backups if they were created
-        if backup_files:
-            logging.error("Attempting to clean up backups due to error...")
-            # Don't remove backups on error, user might need them
-            # remove_backups(backup_files)
+    else:
+        # Outputting to a file
+        output_path = Path(args.output).resolve()
+        logging.info(f"Outputting to file: {output_path}.")
+
+        if output_path.exists():
+            logging.warning(
+                f"Output file {output_path} already exists. It will be overwritten.")
+
+        backup_files = []
+        try:
+            # --- Extract Relationships (always done when outputting to file) ---
+            all_relationships, relationships_by_file = extract_relationships(
+                input_files)
+
+            if not all_relationships:
+                logging.info(
+                    "No 'kind: Relationship' stanzas found in any input file. Nothing to write to output file.")
+                # Ensure an empty file is created or overwritten if specified
+                write_output_file(output_path, [])
+                return
+
+            # --- Write to Output File (always done if relationships found) ---
+            write_output_file(output_path, all_relationships)
+
+            # --- Removal Logic (only if --remove-from-source is specified) ---
+            if remove_mode:
+                logging.warning(
+                    "The --remove-from-source flag is specified.")
+                logging.warning(
+                    "This will MODIFY the original input files after verification.")
+                user_confirmation = input(
+                    "Are you sure you want to remove the Relationship stanzas from the source files? (yes/no): ")
+
+                if user_confirmation.lower() not in ['yes', 'y']:
+                    logging.info(
+                        "Operation aborted by user. Source files were not modified.")
+                    sys.exit(0)
+
+                logging.info(
+                    "Proceeding with removal from source files...")
+                backup_files = create_backups(input_files)
+
+                if verify_and_remove(output_path, relationships_by_file, all_relationships):
+                    logging.info(
+                        "Process completed successfully. Removing backups.")
+                    remove_backups(backup_files)
+                else:
+                    logging.error(
+                        "Process failed during verification or removal. Backups WERE NOT removed.")
+                    logging.error(
+                        f"Input files may be in an inconsistent state. Backups are in: {', '.join(map(str, backup_files))}")
+                    sys.exit(1)
+            else:
+                logging.info(
+                    "Extracted relationships written to output file. Source files were not modified.")
+
+        except Exception as e:
             logging.error(
-                f"Backups were NOT removed due to error. They are located at: {', '.join(map(str, backup_files))}")
-        sys.exit(1)
+                f"An unexpected error occurred during file processing: {e}", exc_info=True)
+            if remove_mode and backup_files:  # Only mention backups if they were actually created
+                logging.error("Attempting to clean up backups due to error...")
+                logging.error(
+                    f"Backups were NOT removed due to error. They are located at: {', '.join(map(str, backup_files))}")
+            sys.exit(1)
 
 
 if __name__ == "__main__":
