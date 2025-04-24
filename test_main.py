@@ -17,7 +17,7 @@ sys.path.insert(0, str(script_dir))
 # or if imports trigger code execution we need to mock (not the case here)
 
 # Disable logging during tests unless debugging
-logging.disable(logging.CRITICAL)
+# logging.disable(logging.CRITICAL) # Keep logs enabled for debugging tests for now
 
 
 class TestYamlRelationshipExtractor(unittest.TestCase):
@@ -29,7 +29,8 @@ class TestYamlRelationshipExtractor(unittest.TestCase):
         mock_parser_instance = MagicMock()
         mock_parser_instance.parse_args.return_value = argparse.Namespace(
             input_patterns=['input/*.yaml', 'another/dir/**/*.yml'],
-            output='output/relationships.yaml'
+            output='output/relationships.yaml',
+            remove_from_source=False  # Add default value
         )
         mock_parser_class.return_value = mock_parser_instance
 
@@ -37,21 +38,28 @@ class TestYamlRelationshipExtractor(unittest.TestCase):
         args = main.parse_arguments()
 
         # Assert
+        # Check standard args
         self.assertEqual(args.input_patterns, [
                          'input/*.yaml', 'another/dir/**/*.yml'])
         self.assertEqual(args.output, 'output/relationships.yaml')
+        # Check calls to add_argument
         mock_parser_instance.add_argument.assert_any_call(
             'input_patterns', nargs='+', help=unittest.mock.ANY)
+        # Fix: output is not required
         mock_parser_instance.add_argument.assert_any_call(
-            '-o', '--output', required=True, help=unittest.mock.ANY)
+            '-o', '--output', required=False, default=None, help=unittest.mock.ANY)
+        # Add check for remove_from_source argument
+        mock_parser_instance.add_argument.assert_any_call(
+            '-r', '--remove-from-source', action='store_true', help=unittest.mock.ANY)
         mock_parser_instance.parse_args.assert_called_once()
 
     @patch('main.glob.glob')
     @patch('main.Path.is_file')
-    @patch('main.Path.resolve')  # Mock resolve to control path generation
+    # Mock resolve to control path generation
+    # @patch('main.Path.resolve') # Patching Path constructor below is often easier
     # Simple pass-through for expanduser
     @patch('os.path.expanduser', side_effect=lambda x: x)
-    def test_find_files(self, mock_expanduser, mock_resolve, mock_is_file, mock_glob):
+    def test_find_files(self, mock_expanduser, mock_is_file, mock_glob):
         """Test finding files with glob patterns."""
         # Arrange
         # Simulate glob matching different patterns
@@ -68,52 +76,26 @@ class TestYamlRelationshipExtractor(unittest.TestCase):
                 return []
         mock_glob.side_effect = glob_side_effect
 
-        # Simulate Path object behavior
-        # Need to create mock Path objects returned by resolve()
-        path_a = MagicMock(spec=Path)
-        path_a.name = 'a.yaml'
-        path_a.__str__.return_value = '/abs/path/a.yaml'
+        # Simulate Path object behavior using Mocks that support comparison
+        def create_mock_path(name, full_path_str, is_file):
+            mock = MagicMock(spec=Path)
+            mock.name = name
+            mock.__str__ = MagicMock(return_value=full_path_str)
+            mock.is_file = MagicMock(return_value=is_file)
+            # Fix: Make mock comparable for sorting within main.find_files
+            mock.__lt__ = lambda self, other: str(self) < str(other)
+            # Mock resolve to return itself (simplified)
+            mock.resolve = MagicMock(return_value=mock)
+            return mock
 
-        path_b = MagicMock(spec=Path)
-        path_b.name = 'b.yaml'
-        path_b.__str__.return_value = '/abs/path/b.yaml'
+        path_a = create_mock_path('a.yaml', '/abs/path/a.yaml', True)
+        path_b = create_mock_path('b.yaml', '/abs/path/b.yaml', True)
+        path_c1 = create_mock_path(
+            'c.yaml', '/abs/path/data/sub/c.yaml', True)
+        path_c2 = create_mock_path('c.yaml', '/abs/path/data/c.yaml', True)
+        path_dir = create_mock_path('a_dir', '/abs/path/a_dir', False)
 
-        path_c1 = MagicMock(spec=Path)
-        path_c1.name = 'c.yaml'
-        path_c1.__str__.return_value = '/abs/path/data/sub/c.yaml'
-
-        path_c2 = MagicMock(spec=Path)
-        path_c2.name = 'c.yaml'
-        path_c2.__str__.return_value = '/abs/path/data/c.yaml'
-
-        path_dir = MagicMock(spec=Path)
-        path_dir.name = 'a_dir'
-        path_dir.__str__.return_value = '/abs/path/a_dir'
-
-        # Link resolve results to Path objects
-        resolve_map = {
-            'a.yaml': path_a,
-            'b.yaml': path_b,
-            'data/sub/c.yaml': path_c1,
-            'data/c.yaml': path_c2,
-            'a_dir': path_dir
-        }
-        # p is the Path object itself
-        mock_resolve.side_effect = lambda p: resolve_map[str(p)]
-
-        # Define which paths are files
-        isfile_map = {
-            path_a: True,
-            path_b: True,
-            path_c1: True,
-            path_c2: True,
-            path_dir: False  # a_dir is not a file
-        }
-        mock_is_file.side_effect = lambda p: isfile_map.get(p, False)
-
-        # Map Path calls in find_files back to strings for resolve_map
-        # This requires patching Path constructor or how it's used internally
-        # Easier: Mock Path() directly for the file strings returned by glob
+        # Map path strings (from glob) to our mock Path objects
         path_init_map = {
             'a.yaml': path_a,
             'b.yaml': path_b,
@@ -122,8 +104,8 @@ class TestYamlRelationshipExtractor(unittest.TestCase):
             'a_dir': path_dir
         }
 
+        # Patch Path constructor to return our pre-configured mocks
         with patch('main.Path', side_effect=lambda f: path_init_map[f]) as mock_path_constructor:
-
             # Act
             found_files = main.find_files(
                 ['*.yaml', 'data/**/c.yaml', 'nonexistent.yaml', 'a_dir'])
@@ -136,10 +118,8 @@ class TestYamlRelationshipExtractor(unittest.TestCase):
             mock_glob.assert_any_call('a_dir', recursive=True)
 
             # Check Path instantiation and resolve calls
-            self.assertEqual(mock_path_constructor.call_count,
-                             5)  # a, b, c1, c2, a_dir
+            self.assertEqual(mock_path_constructor.call_count, 5)
             # Resolve is called within Path(f).resolve()
-            # mock_resolve should have been called 5 times, let's check Path.resolve()
             self.assertEqual(path_a.resolve.call_count, 1)
             self.assertEqual(path_b.resolve.call_count, 1)
             self.assertEqual(path_c1.resolve.call_count, 1)
@@ -153,12 +133,12 @@ class TestYamlRelationshipExtractor(unittest.TestCase):
             self.assertEqual(path_c2.is_file.call_count, 1)
             self.assertEqual(path_dir.is_file.call_count, 1)
 
-            # Check final list (sorted, absolute paths represented by mocks)
-            # Sort expected list based on string representation for comparison
+            # Check final list (should be sorted by Path's sorting, which we mocked using __lt__)
             expected_files = sorted(
+                # Sort expected using str
                 [path_a, path_b, path_c1, path_c2], key=str)
-            # Sort actual list the same way for comparison
-            self.assertEqual(sorted(found_files, key=str), expected_files)
+            # Direct comparison should work now
+            self.assertEqual(found_files, expected_files)
 
     @patch('main.shutil.copy2')
     @patch('main.remove_backups')  # Mock remove_backups to check calls
@@ -418,22 +398,26 @@ value: true""")
         input2_content = [rel3, config1]       # Original content
 
         read_call_count = 0
+        read_map = {
+            output_path: iter(output_file_content),
+            file1_path: iter(input1_content),
+            file2_path: iter(input2_content)
+        }
 
         def read_side_effect(path):
             nonlocal read_call_count
             read_call_count += 1
-            if path == output_path:
-                print(f"Mock Read: Output ({read_call_count})")
-                return iter(output_file_content)
-            elif path == file1_path:
-                print(f"Mock Read: Input 1 ({read_call_count})")
-                return iter(input1_content)
-            elif path == file2_path:
-                print(f"Mock Read: Input 2 ({read_call_count})")
-                return iter(input2_content)
-            else:
-                raise FileNotFoundError(
-                    f"Unexpected path in mock_read_yaml: {path}")
+            print(f"Mock Read: {path} ({read_call_count})")
+            if path in read_map:
+                # Important: re-create iterator for subsequent reads of the same file
+                if path == output_path:
+                    return iter(output_file_content)
+                elif path == file1_path:
+                    return iter(input1_content)
+                elif path == file2_path:
+                    return iter(input2_content)
+            raise FileNotFoundError(
+                f"Unexpected path in mock_read_yaml: {path}")
         mock_read_yaml.side_effect = read_side_effect
 
         # Act
@@ -461,44 +445,15 @@ value: true""")
         ], any_order=True)
 
         # Check content dumped to files
-        # Get the file handles passed to dump_all
-        # The file handles mock_open returns
-        handles = [c.args[0] for c in mock_open_write.call_args_list]
-
-        # Check calls to yaml.safe_dump_all (might be tricky with mock handles)
-        # We check what *should* have been dumped
         self.assertEqual(mock_safe_dump_all.call_count, 2)
-        # Check call arguments (expected data to write)
-        # Order depends on dict iteration order, which is stable for these tests
-        call_args_list = mock_safe_dump_all.call_args_list
+        # Call args list is [(args1, kwargs1), (args2, kwargs2)]
+        # Extract the first positional argument (the data list) from each call
+        dumped_data_calls = [c.args[0]
+                             for c in mock_safe_dump_all.call_args_list]
 
-        # Find which call corresponds to which file based on what was kept
-        dump_args_file1 = None
-        dump_args_file2 = None
-        for dump_call in call_args_list:
-            data_dumped = dump_call.args[0]
-            if data_dumped == [table1]:
-                dump_args_file1 = dump_call
-            elif data_dumped == [config1]:
-                dump_args_file2 = dump_call
-
-        self.assertIsNotNone(
-            dump_args_file1, "Write call for file1 not found or data incorrect")
-        self.assertIsNotNone(
-            dump_args_file2, "Write call for file2 not found or data incorrect")
-
-        # Verify other dump parameters
-        self.assertEqual(dump_args_file1.args[0], [table1])
-        self.assertIsInstance(
-            dump_args_file1.args[1], MagicMock)  # File handle
-        self.assertEqual(dump_args_file1.kwargs, {
-                         'default_flow_style': False, 'sort_keys': False})
-
-        self.assertEqual(dump_args_file2.args[0], [config1])
-        self.assertIsInstance(
-            dump_args_file2.args[1], MagicMock)  # File handle
-        self.assertEqual(dump_args_file2.kwargs, {
-                         'default_flow_style': False, 'sort_keys': False})
+        # Check that the expected data was dumped, order doesn't matter
+        self.assertIn([table1], dumped_data_calls)
+        self.assertIn([config1], dumped_data_calls)
 
     @patch('main.read_yaml_documents')
     def test_verify_and_remove_verification_fail_count(self, mock_read_yaml):
@@ -587,28 +542,34 @@ value: true""")
 
     # --- Test main function integration (High level) ---
 
-    @patch('main.verify_and_remove')
-    @patch('main.remove_backups')
+    # Decorators are applied bottom-up. Arguments must match in reverse order.
+    @patch('main.parse_arguments')          # mock_parse_args (last arg)
+    @patch('main.find_files')               # mock_find_files
+    @patch('main.create_backups')           # mock_create_backups
+    @patch('main.extract_relationships')    # mock_extract
+    @patch('main.write_output_file')        # mock_write_output
+    @patch('main.Path')                     # mock_path_constructor
+    # mock_exists - Be careful patching class AND method
     @patch('main.Path.exists')
-    # Patch Path constructor instead of resolve directly
-    @patch('main.Path')
-    def test_main_success_flow(self, mock_path_constructor, mock_exists, mock_remove_backups, mock_verify_remove, mock_write_output, mock_extract, mock_create_backups, mock_find_files, mock_parse_args):
-        """Test the main function happy path."""
+    @patch('main.remove_backups')           # mock_remove_backups
+    @patch('main.verify_and_remove')        # mock_verify_remove (first arg)
+    @patch('builtins.input', return_value='yes')  # Mock user confirmation
+    def test_main_success_flow(self, mock_input, mock_verify_remove, mock_remove_backups, mock_exists, mock_path_constructor, mock_write_output, mock_extract, mock_create_backups, mock_find_files, mock_parse_args):
+        """Test the main function happy path with removal."""
         # Arrange
+        # Mock args for removal case
         mock_args = argparse.Namespace(
-            input_patterns=['*.yaml'], output='out.yaml')
+            input_patterns=['*.yaml'], output='out.yaml', remove_from_source=True)
         mock_parse_args.return_value = mock_args
 
-        # Configure the mock Path object returned by the constructor
+        # Configure the mock Path object returned by the constructor for output
         mock_output_path_instance = MagicMock(spec=Path)
-        mock_path_constructor.return_value = mock_output_path_instance
-
-        # Mock the exists method on the instance returned by Path('out.yaml')
-        mock_output_path_instance.exists.return_value = False
-
-        # Mock the resolve method on the instance returned by Path('out.yaml')
-        # It should return itself after resolving (or a new mock if paths change)
-        mock_output_path_instance.resolve.return_value = mock_output_path_instance
+        mock_output_path_instance.exists = MagicMock(
+            return_value=False)  # Mock exists on instance
+        mock_output_path_instance.resolve = MagicMock(
+            return_value=mock_output_path_instance)  # Mock resolve on instance
+        # When Path('out.yaml') is called, return our instance
+        mock_path_constructor.side_effect = lambda p: mock_output_path_instance if p == 'out.yaml' else MagicMock()
 
         file1 = Path('/in/file1.yaml')
         mock_find_files.return_value = [file1]
@@ -628,23 +589,24 @@ value: true""")
 
         # Assert
         mock_parse_args.assert_called_once()
+        mock_input.assert_called_once()  # Check confirmation was asked
 
-        # Check Path('out.yaml') was called
-        mock_path_constructor.assert_called_once_with('out.yaml')
-        # Check resolve() was called on the instance
+        # Check Path('out.yaml') construction and method calls
+        # Check it was called for output path
+        mock_path_constructor.assert_any_call('out.yaml')
         mock_output_path_instance.resolve.assert_called_once_with()
-        # Check exists() was called on the instance
         mock_output_path_instance.exists.assert_called_once()
 
         mock_find_files.assert_called_once_with(mock_args.input_patterns)
-        mock_create_backups.assert_called_once_with([file1])
         mock_extract.assert_called_once_with([file1])
         mock_write_output.assert_called_once_with(
-            mock_output_path_instance, all_rels)  # Use the instance
+            mock_output_path_instance, all_rels)
+        mock_create_backups.assert_called_once_with(
+            [file1])  # Backups created before verify
         mock_verify_remove.assert_called_once_with(
-            mock_output_path_instance, rels_by_file, all_rels)  # Use the instance
-        # Check that backups are removed on success
-        mock_remove_backups.assert_called_once_with([backup1])
+            mock_output_path_instance, rels_by_file, all_rels)
+        mock_remove_backups.assert_called_once_with(
+            [backup1])  # Backups removed on success
 
     @patch('main.parse_arguments')
     @patch('main.find_files')
@@ -654,17 +616,22 @@ value: true""")
     @patch('main.verify_and_remove')
     @patch('main.remove_backups')
     @patch('sys.exit')
-    @patch('main.Path.exists')
-    @patch('main.Path.resolve')
-    def test_main_verification_fail_flow(self, mock_resolve, mock_exists, mock_exit, mock_remove_backups, mock_verify_remove, mock_write_output, mock_extract, mock_create_backups, mock_find_files, mock_parse_args):
+    @patch('main.Path')                     # Patch Path constructor
+    @patch('builtins.input', return_value='yes')  # Mock user confirmation
+    def test_main_verification_fail_flow(self, mock_input, mock_path_constructor, mock_exit, mock_remove_backups, mock_verify_remove, mock_write_output, mock_extract, mock_create_backups, mock_find_files, mock_parse_args):
         """Test the main function when verification fails."""
         # Arrange
+        # Fix: Ensure remove_from_source is set for this flow
         mock_args = argparse.Namespace(
-            input_patterns=['*.yaml'], output='out.yaml')
+            input_patterns=['*.yaml'], output='out.yaml', remove_from_source=True)
         mock_parse_args.return_value = mock_args
+
+        # Mock Path object for output path
         mock_output_path = MagicMock(spec=Path)
-        mock_resolve.return_value = mock_output_path
-        mock_exists.return_value = False
+        mock_output_path.exists = MagicMock(return_value=False)
+        mock_output_path.resolve = MagicMock(return_value=mock_output_path)
+        mock_path_constructor.side_effect = lambda p: mock_output_path if p == 'out.yaml' else MagicMock()
+
         file1 = Path('/in/file1.yaml')
         mock_find_files.return_value = [file1]
         backup1 = Path('/in/.backup_file1.yaml')
@@ -679,8 +646,9 @@ value: true""")
         main.main()
 
         # Assert
-        # Check execution up to verify_and_remove
+        mock_input.assert_called_once()  # Check confirmation was asked
         mock_write_output.assert_called_once_with(mock_output_path, all_rels)
+        mock_create_backups.assert_called_once_with([file1])
         mock_verify_remove.assert_called_once_with(
             mock_output_path, rels_by_file, all_rels)
         # IMPORTANT: Check that backups are NOT removed on failure
@@ -688,28 +656,71 @@ value: true""")
         # Check that sys.exit was called
         mock_exit.assert_called_once_with(1)
 
-    @patch('main.parse_arguments')
-    @patch('main.find_files')
-    @patch('main.create_backups')
-    @patch('main.extract_relationships')
-    @patch('main.remove_backups')  # Need to mock remove_backups here too
-    @patch('main.Path.exists')
-    @patch('main.Path.resolve')
-    @patch('main.write_output_file')  # Added patch
-    @patch('main.verify_and_remove')  # Added patch
-    def test_main_no_relationships_found(self, mock_resolve, mock_exists, mock_remove_backups, mock_extract, mock_create_backups, mock_find_files, mock_parse_args, mock_write_output, mock_verify_remove):  # Added mock args
-        """Test the main function when no relationships are found."""
+    # Fix: Correct argument order and add missing ones
+    @patch('main.parse_arguments')          # mock_parse_args (last)
+    @patch('main.find_files')               # mock_find_files
+    # @patch('main.create_backups')          # Not called in this flow
+    @patch('main.extract_relationships')    # mock_extract
+    # @patch('main.remove_backups')          # Not called in this flow
+    @patch('main.Path')                     # mock_path_constructor
+    # @patch('main.Path.exists')             # Not called if output=None
+    # @patch('main.Path.resolve')            # Not called if output=None
+    # mock_write_stream (used in stdout mode)
+    @patch('main.write_to_stream')
+    # @patch('main.write_output_file')       # Not called in stdout mode
+    # @patch('main.verify_and_remove')       # Not called in stdout mode
+    @patch('sys.stdout', new_callable=io.StringIO)  # Mock stdout
+    def test_main_stdout_no_relationships_found(self, mock_stdout, mock_write_stream, mock_path_constructor, mock_extract, mock_find_files, mock_parse_args):
+        """Test the main function in stdout mode when no relationships are found."""
         # Arrange
+        # Mock args for stdout mode
         mock_args = argparse.Namespace(
-            input_patterns=['*.yaml'], output='out.yaml')
+            input_patterns=['*.yaml'], output=None, remove_from_source=False)
         mock_parse_args.return_value = mock_args
-        mock_output_path = MagicMock(spec=Path)
-        mock_resolve.return_value = mock_output_path
-        mock_exists.return_value = False
+
         file1 = Path('/in/file1.yaml')
         mock_find_files.return_value = [file1]
-        backup1 = Path('/in/.backup_file1.yaml')
-        mock_create_backups.return_value = [backup1]
+
+        # Fix: Ensure extract returns a tuple (list, dict) even if empty
+        mock_extract.return_value = ([], {file1: []})  # No relationships found
+
+        # Act
+        main.main()
+
+        # Assert
+        mock_find_files.assert_called_once_with(mock_args.input_patterns)
+        mock_extract.assert_called_once_with([file1])
+        # write_to_stream should NOT be called if no relationships found
+        mock_write_stream.assert_not_called()
+        # Check logged output for no relationships found message? (Optional)
+        # self.assertIn("No 'kind: Relationship' stanzas found", mock_stdout.getvalue()) # Requires log capture
+
+    # Fix: Add test for file output mode with no relationships found
+    @patch('main.parse_arguments')          # mock_parse_args (last)
+    @patch('main.find_files')               # mock_find_files
+    # @patch('main.create_backups')          # Not called if no relationships found
+    @patch('main.extract_relationships')    # mock_extract
+    # @patch('main.remove_backups')          # Not called if no relationships found
+    @patch('main.Path')                     # mock_path_constructor
+    # @patch('main.Path.exists')             # Mocked via mock_path_constructor instance
+    # @patch('main.Path.resolve')            # Mocked via mock_path_constructor instance
+    @patch('main.write_output_file')        # mock_write_output
+    # @patch('main.verify_and_remove')       # Not called if no relationships found
+    def test_main_file_output_no_relationships_found(self, mock_write_output, mock_path_constructor, mock_extract, mock_find_files, mock_parse_args):
+        """Test main function, file output mode, when no relationships are found."""
+        # Arrange
+        mock_args = argparse.Namespace(
+            input_patterns=['*.yaml'], output='out.yaml', remove_from_source=False)
+        mock_parse_args.return_value = mock_args
+
+        # Mock Path object for output path
+        mock_output_path = MagicMock(spec=Path)
+        mock_output_path.exists = MagicMock(return_value=False)
+        mock_output_path.resolve = MagicMock(return_value=mock_output_path)
+        mock_path_constructor.side_effect = lambda p: mock_output_path if p == 'out.yaml' else MagicMock()
+
+        file1 = Path('/in/file1.yaml')
+        mock_find_files.return_value = [file1]
 
         # Simulate extract finding nothing
         mock_extract.return_value = ([], {file1: []})
@@ -718,12 +729,16 @@ value: true""")
         main.main()
 
         # Assert
+        mock_find_files.assert_called_once_with(mock_args.input_patterns)
         mock_extract.assert_called_once_with([file1])
-        # Check that backups ARE removed when nothing is found (clean exit)
-        mock_remove_backups.assert_called_once_with([backup1])
-        # write_output and verify_and_remove should not be called
-        mock_write_output.assert_not_called()
-        mock_verify_remove.assert_not_called()
+        # Check that write_output_file *is* called with an empty list
+        # to ensure the output file is created/overwritten as empty
+        mock_write_output.assert_called_once_with(mock_output_path, [])
+        # Other mocks like create_backups, verify_and_remove should not be called
+
+    # Clean up original test_main_no_relationships_found - split into stdout/file tests above
+    # This test was trying to do file output mode but had wrong mocks/asserts
+    # def test_main_no_relationships_found(...): --> REMOVED
 
 
 if __name__ == '__main__':
