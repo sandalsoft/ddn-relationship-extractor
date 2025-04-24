@@ -320,15 +320,33 @@ def main():
     stdout_mode = args.output is None
     remove_mode = args.remove_from_source and not stdout_mode
 
+    # --- Early Exit Check for Removal Mode ---
+    if remove_mode:
+        logging.warning("The --remove-from-source flag is specified.")
+        logging.warning(
+            "This will MODIFY the original input files after verification.")
+        user_confirmation = input(
+            "Are you sure you want to proceed with modifying source files? (yes/no): ")
+        if user_confirmation.lower() not in ['yes', 'y']:
+            logging.info(
+                "Operation aborted by user. No files will be processed or modified.")
+            sys.exit(0)
+        logging.info("Confirmation received. Proceeding...")
+    elif args.remove_from_source and stdout_mode:
+        # Inform user if -r is used with stdout mode (it will be ignored later)
+        logging.warning(
+            "Ignoring --remove-from-source flag as output is stdout. No source files will be modified.")
+
     input_files = find_files(args.input_patterns)
     if not input_files:
         return  # Error already logged by find_files
 
     if stdout_mode:
         logging.info("Outputting to stdout. Input files will not be modified.")
-        if args.remove_from_source:
-            logging.warning(
-                "Ignoring --remove-from-source flag as output is stdout.")
+        # The warning for using -r with stdout is now handled earlier
+        # if args.remove_from_source:
+        #     logging.warning(
+        #         "Ignoring --remove-from-source flag as output is stdout.")
         try:
             # Extract only, no backups or removal needed for stdout mode
             all_relationships, _ = extract_relationships(input_files)
@@ -346,8 +364,7 @@ def main():
                 f"An error occurred during extraction to stdout: {e}", exc_info=True)
             sys.exit(1)
 
-    else:
-        # Outputting to a file
+    else:  # Outputting to a file
         output_path = Path(args.output).resolve()
         logging.info(f"Outputting to file: {output_path}.")
 
@@ -357,34 +374,23 @@ def main():
 
         backup_files = []
         try:
-            # --- Extract Relationships (always done when outputting to file) ---
+            # --- Extract Relationships ---
             all_relationships, relationships_by_file = extract_relationships(
                 input_files)
 
             if not all_relationships:
                 logging.info(
                     "No 'kind: Relationship' stanzas found in any input file. Nothing to write to output file.")
-                # Ensure an empty file is created or overwritten if specified
+                # Create/overwrite empty file
                 write_output_file(output_path, [])
                 return
 
-            # --- Write to Output File (always done if relationships found) ---
+            # --- Write to Output File ---
             write_output_file(output_path, all_relationships)
 
-            # --- Removal Logic (only if --remove-from-source is specified) ---
+            # --- Removal Logic (only if remove_mode is true and confirmed) ---
             if remove_mode:
-                logging.warning(
-                    "The --remove-from-source flag is specified.")
-                logging.warning(
-                    "This will MODIFY the original input files after verification.")
-                user_confirmation = input(
-                    "Are you sure you want to remove the Relationship stanzas from the source files? (yes/no): ")
-
-                if user_confirmation.lower() not in ['yes', 'y']:
-                    logging.info(
-                        "Operation aborted by user. Source files were not modified.")
-                    sys.exit(0)
-
+                # Confirmation already happened at the start
                 logging.info(
                     "Proceeding with removal from source files...")
                 backup_files = create_backups(input_files)
@@ -400,13 +406,14 @@ def main():
                         f"Input files may be in an inconsistent state. Backups are in: {', '.join(map(str, backup_files))}")
                     sys.exit(1)
             else:
+                # This case covers when outputting to file but NOT removing
                 logging.info(
                     "Extracted relationships written to output file. Source files were not modified.")
 
         except Exception as e:
             logging.error(
                 f"An unexpected error occurred during file processing: {e}", exc_info=True)
-            if remove_mode and backup_files:  # Only mention backups if they were actually created
+            if remove_mode and backup_files:  # Check if backups were potentially created
                 logging.error("Attempting to clean up backups due to error...")
                 logging.error(
                     f"Backups were NOT removed due to error. They are located at: {', '.join(map(str, backup_files))}")
