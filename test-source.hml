@@ -1,0 +1,242 @@
+kind: ObjectType
+version: v1
+definition:
+  name: ProcessExecutions
+  description: Represents records of process executions on IT systems, tracking details
+    about running programs or scripts
+  fields:
+  - name: commandLine
+    type: Text_1
+    description: The full command-line string used to initiate the process (e.g.,
+      '/usr/bin/python3 script.py'), providing context for its execution
+  - name: endTime
+    type: Timestamptz
+    description: The timestamp with timezone when the process execution ended (e.g.,
+      '2025-03-01 16:00:00+00'), null if still running
+  - name: executionId
+    type: Uuid!
+    description: A unique identifier for the process execution instance, represented
+      as a required universally unique identifier (UUID)
+  - name: parentProcessId
+    type: Int4_1
+    description: The process ID (PID) of the parent process that spawned this process,
+      stored as a 32-bit integer, null if no parent exists
+  - name: processId
+    type: Int4_1
+    description: The process ID (PID) assigned to this process by the operating system,
+      stored as a 32-bit integer, unique during its runtime
+  - name: processName
+    type: Varchar
+    description: The name of the executable or process (e.g., 'python3', 'notepad.exe'),
+      identifying the program being run
+  - name: startTime
+    type: Timestamptz
+    description: The timestamp with timezone when the process execution began (e.g.,
+      '2025-03-01 15:45:00+00')
+  - name: systemId
+    type: Uuid!
+    description: A unique identifier for the IT system or device where the process
+      executed, linking it to its host environment, represented as a required UUID
+  - name: userName
+    type: Varchar
+    description: The username or account under which the process was executed (e.g.,
+      'jdoe'), associating it with a specific user
+  graphql:
+    typeName: ProcessExecutions
+    inputTypeName: ProcessExecutionsInput
+  dataConnectorTypeMapping:
+  - dataConnectorName: ITAssets
+    dataConnectorObjectType: process_executions
+    fieldMapping:
+      commandLine:
+        column:
+          name: command_line
+      endTime:
+        column:
+          name: end_time
+      executionId:
+        column:
+          name: execution_id
+      parentProcessId:
+        column:
+          name: parent_process_id
+      processId:
+        column:
+          name: process_id
+      processName:
+        column:
+          name: process_name
+      startTime:
+        column:
+          name: start_time
+      systemId:
+        column:
+          name: system_id
+      userName:
+        column:
+          name: user_name
+---
+kind: TypePermissions
+version: v1
+definition:
+  typeName: ProcessExecutions
+  permissions:
+  - role: admin
+    output:
+      allowedFields:
+      - commandLine
+      - endTime
+      - executionId
+      - parentProcessId
+      - processId
+      - processName
+      - startTime
+      - systemId
+      - userName
+---
+kind: BooleanExpressionType
+version: v1
+definition:
+  name: ProcessExecutionsBoolExp
+  operand:
+    object:
+      type: ProcessExecutions
+      comparableFields:
+      - fieldName: commandLine
+        booleanExpressionType: TextBoolExp_1
+      - fieldName: endTime
+        booleanExpressionType: TimestamptzBoolExp
+      - fieldName: executionId
+        booleanExpressionType: UuidBoolExp
+      - fieldName: parentProcessId
+        booleanExpressionType: Int4BoolExp_1
+      - fieldName: processId
+        booleanExpressionType: Int4BoolExp_1
+      - fieldName: processName
+        booleanExpressionType: VarcharBoolExp
+      - fieldName: startTime
+        booleanExpressionType: TimestamptzBoolExp
+      - fieldName: systemId
+        booleanExpressionType: UuidBoolExp
+      - fieldName: userName
+        booleanExpressionType: VarcharBoolExp
+      comparableRelationships:
+      - relationshipName: fileAccesses
+      - relationshipName: networkConnections
+      - relationshipName: system
+  logicalOperators:
+    enable: true
+  isNull:
+    enable: true
+  graphql:
+    typeName: ProcessExecutionsBoolExp
+---
+kind: AggregateExpression
+version: v1
+definition:
+  name: ProcessExecutionsAggExp
+  operand:
+    object:
+      aggregatedType: ProcessExecutions
+      aggregatableFields:
+      - fieldName: commandLine
+        aggregateExpression: TextAggExp_1
+      - fieldName: endTime
+        aggregateExpression: TimestamptzAggExp
+      - fieldName: executionId
+        aggregateExpression: UuidAggExp
+      - fieldName: parentProcessId
+        aggregateExpression: Int4AggExp_1
+      - fieldName: processId
+        aggregateExpression: Int4AggExp_1
+      - fieldName: processName
+        aggregateExpression: VarcharAggExp
+      - fieldName: startTime
+        aggregateExpression: TimestamptzAggExp
+      - fieldName: systemId
+        aggregateExpression: UuidAggExp
+      - fieldName: userName
+        aggregateExpression: VarcharAggExp
+  count:
+    enable: true
+  graphql:
+    selectTypeName: ProcessExecutionsAggExp
+---
+kind: OrderByExpression
+version: v1
+definition:
+  name: ProcessExecutionsOrderByExp
+  operand:
+    object:
+      orderedType: ProcessExecutions
+      orderableFields:
+      - fieldName: commandLine
+        orderByExpression: Text1OrderByExp
+      - fieldName: endTime
+        orderByExpression: TimestamptzOrderByExp
+      - fieldName: executionId
+        orderByExpression: UuidOrderByExp
+      - fieldName: parentProcessId
+        orderByExpression: Int41OrderByExp
+      - fieldName: processId
+        orderByExpression: Int41OrderByExp
+      - fieldName: processName
+        orderByExpression: VarcharOrderByExp
+      - fieldName: startTime
+        orderByExpression: TimestamptzOrderByExp
+      - fieldName: systemId
+        orderByExpression: UuidOrderByExp
+      - fieldName: userName
+        orderByExpression: VarcharOrderByExp
+      orderableRelationships:
+      - relationshipName: system
+  graphql:
+    expressionTypeName: ProcessExecutionsOrderByExp
+---
+kind: ModelPermissions
+version: v1
+definition:
+  modelName: ProcessExecutions
+  permissions:
+  - role: admin
+    select:
+      filter: null
+      allowSubscriptions: true
+---
+kind: Model
+version: v2
+definition:
+  description: 'This logs processes (e.g., chrome.exe) executed on a system, with
+    a unique execution_id, system_id, process name, process ID, parent process ID,
+    start/end times, command line, and username. It connects to systems as a record
+    of active software execution, often spawned by installed_applications or running_Services.
+    It relates to network_connections (processes initiating network activity), file_accesses
+    (processes interacting with files), and system_stats (resource usage), providing
+    a dynamic view of system activity. For example, a "java.exe" process might link
+    to a vulnerable Log4j instance.
+
+    '
+  name: ProcessExecutions
+  objectType: ProcessExecutions
+  source:
+    dataConnectorName: ITAssets
+    collection: process_executions
+  filterExpressionType: ProcessExecutionsBoolExp
+  aggregateExpression: ProcessExecutionsAggExp
+  orderByExpression: ProcessExecutionsOrderByExp
+  graphql:
+    selectMany:
+      queryRootField: processExecutions
+      subscription:
+        rootField: processExecutions
+    selectUniques:
+    - queryRootField: processExecutionsByExecutionId
+      uniqueIdentifier:
+      - executionId
+      subscription:
+        rootField: processExecutionsByExecutionId
+    filterInputTypeName: ProcessExecutionsFilterInput
+    aggregate:
+      queryRootField: processExecutionsAggregate
+      subscription:
+        rootField: processExecutionsAggregate

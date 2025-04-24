@@ -1,0 +1,61 @@
+---
+  kind: Relationship
+  version: v1
+  definition:
+    name: fileAccesses
+    sourceType: ProcessExecutions
+    target:
+      model:
+        name: FileAccesses
+        relationshipType: Array
+        aggregate:
+          aggregateExpression: FileAccessesAggExp
+    mapping:
+      - source:
+          fieldPath:
+            - fieldName: executionId
+        target:
+          modelField:
+            - fieldName: executionId
+    graphql:
+      aggregateFieldName: fileAccessesAggregate
+  
+---
+kind: Relationship
+version: v1
+definition:
+  name: networkConnections
+  sourceType: ProcessExecutions
+  target:
+    model:
+      name: NetworkConnections
+      relationshipType: Array
+      aggregate:
+        aggregateExpression: NetworkConnectionsAggExp
+  mapping:
+    - source:
+        fieldPath:
+          - fieldName: executionId
+      target:
+        modelField:
+          - fieldName: executionId
+  graphql:
+    aggregateFieldName: networkConnectionsAggregate
+
+---
+kind: Relationship
+version: v1
+definition:
+  name: system
+  sourceType: ProcessExecutions
+  target:
+    model:
+      name: Systems
+      relationshipType: Object
+  mapping:
+    - source:
+        fieldPath:
+          - fieldName: systemId
+      target:
+        modelField:
+          - fieldName: systemId
